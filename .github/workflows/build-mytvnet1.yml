@@ -3,6 +3,15 @@ name: Build Armbian MytvNet1 S905X3
 on:
   workflow_dispatch:
     inputs:
+      os_release:
+        description: "OS release"
+        required: true
+        default: "noble"
+        type: choice
+        options:
+          - noble
+          - bookworm
+          - trixie
       armbian_kernel:
         description: "Kernel series"
         required: true
@@ -22,35 +31,52 @@ on:
           - server
           - desktop
           - beta
-      os_release:
-        description: "OS release"
-        required: true
-        default: "noble"
-        type: choice
-        options:
-          - noble
-          - bookworm
-          - trixie
+
 
 env:
   TZ: Asia/Ho_Chi_Minh
+  BOARD: s905x3-a95xf3
+  VENDOR_PRETTY: "Armbian MytvNet1 905X3"
 
 jobs:
   build:
-    runs-on: ubuntu-26.04-arm
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
 
     steps:
-      - name: Checkout
+      - name: Checkout our repo
         uses: actions/checkout@v6
 
-      - name: Clean runner
+      - name: Install host tools
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android 2>/dev/null || true
           sudo apt-get update
-          sudo apt-get install -y xz-utils gzip tar curl
-          
+          sudo apt-get install -y \
+            git curl jq xz-utils gzip tar unzip \
+            parted dosfstools e2fsprogs util-linux \
+            qemu-user-static binfmt-support
+
+      - name: Clone OPhub with retry
+        shell: bash
+        run: |
+          set -e
+
+          for i in 1 2 3 4 5; do
+            echo "Clone attempt $i..."
+            git clone --depth=1 https://github.com/ophub/amlogic-s9xxx-armbian.git ophub-src && break
+            rm -rf ophub-src
+            sleep $((i * 10))
+          done
+
+          test -d ophub-src || exit 1
+
+      - name: Install OPhub dependencies
+        shell: bash
+        working-directory: ophub-src
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y $(cat compile-kernel/tools/script/ubuntu2404-build-armbian-depends)
+
       - name: Select base image
         shell: bash
         run: |
@@ -58,95 +84,56 @@ jobs:
 
           case "${{ inputs.os_release }}" in
             noble)
-              echo "BASE_URL=https://github.com/ophub/amlogic-s9xxx-armbian/releases/download/Armbian_noble_arm64_server/Armbian_noble_arm64_server.img.gz" >> "$GITHUB_ENV"
+              SITE="https://armbian.tnahosting.net/dl/odroidn2/archive/"
+              PATTERN='Armbian.*noble.*.img.xz'
               ;;
             bookworm)
-              echo "BASE_URL=https://github.com/ophub/amlogic-s9xxx-armbian/releases/download/Armbian_bookworm_arm64_server/Armbian_bookworm_arm64_server.img.gz" >> "$GITHUB_ENV"
+              SITE="https://armbian.tnahosting.net/dl/odroidn2/archive/"
+              PATTERN='Armbian.*bookworm.*.img.xz'
               ;;
             trixie)
-              echo "BASE_URL=https://github.com/ophub/amlogic-s9xxx-armbian/releases/download/Armbian_trixie_arm64_server/Armbian_trixie_arm64_server.img.gz" >> "$GITHUB_ENV"
-              ;;
-            *)
-              echo "Unsupported release: ${{ inputs.os_release }}"
-              exit 1
+              SITE="https://armbian.tnahosting.net/dl/odroidn2/archive/"
+              PATTERN='Armbian.*trixie.*.img.xz'
               ;;
           esac
 
-      - name: Build Armbian for MytvNet1 / A95XF3 100M
-        uses: ophub/amlogic-s9xxx-armbian@main
-        with:
-          build_target: armbian
-          armbian_board: s905x3-a95xf3
-          armbian_path: ${{ env.BASE_URL }}
-          armbian_kernel: ${{ inputs.armbian_kernel }}
-          auto_kernel: true
-          kernel_repo: ophub/kernel
-          kernel_usage: stable
-          armbian_fstype: ext4
-          armbian_edition: ${{ inputs.armbian_edition }}
-          armbian_files: files
-          builder_name: mytvnet1
+          FILE="$(curl -fsSL "$SITE" | grep -oE "$PATTERN" | head -n 1)"
+          test -n "$FILE"
 
-      - name: Patch image release name
-        if: ${{ env.PACKAGED_STATUS == 'success' && !cancelled() }}
+          echo "BASE_URL=${SITE}${FILE}" >> "$GITHUB_ENV"
+          echo "BASE_FILE=${FILE}" >> "$GITHUB_ENV"
+
+      - name: Download base image
+        shell: bash
+        working-directory: ophub-src
+        run: |
+          set -e
+          mkdir -p build/output/images
+
+          for i in 1 2 3 4 5; do
+            echo "Download attempt $i: ${BASE_URL}"
+            curl -fL --retry 5 --retry-delay 10 --retry-all-errors \
+              "${BASE_URL}" \
+              -o "build/output/images/${BASE_FILE}" && break
+            sleep $((i * 10))
+          done
+
+          ls -lh build/output/images
+
+      - name: Add MytvNet1 custom files into OPhub common-files
         shell: bash
         run: |
           set -e
 
-          echo "PACKAGED_OUTPUTPATH=${PACKAGED_OUTPUTPATH}"
-          ls -lh "${PACKAGED_OUTPUTPATH}"
-
-          IMG="$(find "${PACKAGED_OUTPUTPATH}" -type f \( -name '*.img' -o -name '*.img.gz' -o -name '*.img.xz' \) | head -n1)"
-          echo "Image: ${IMG}"
-
-          WORK="${GITHUB_WORKSPACE}/_patch_img"
-          mkdir -p "${WORK}"
-
-          case "${IMG}" in
-            *.img.gz)
-              gzip -dkf "${IMG}"
-              RAW="${IMG%.gz}"
-              ;;
-            *.img.xz)
-              xz -dkf "${IMG}"
-              RAW="${IMG%.xz}"
-              ;;
-            *.img)
-              RAW="${IMG}"
-              ;;
-            *)
-              echo "Unknown image format: ${IMG}"
-              exit 1
-              ;;
-          esac
-
-          LOOP="$(sudo losetup --find --partscan --show "${RAW}")"
-          echo "Loop: ${LOOP}"
-
-          sleep 3
-          lsblk "${LOOP}"
-
-          ROOT_PART="${LOOP}p2"
-          BOOT_PART="${LOOP}p1"
-
-          sudo mkdir -p "${WORK}/rootfs" "${WORK}/bootfs"
-          sudo mount "${ROOT_PART}" "${WORK}/rootfs"
-          sudo mount "${BOOT_PART}" "${WORK}/bootfs" || true
-
-          # Make sure boot config uses correct tested DTB.
-          if [ -f "${WORK}/bootfs/uEnv.txt" ]; then
-            sudo sed -i 's|^FDT=.*|FDT=/dtb/amlogic/meson-sm1-a95xf3-air.dtb|' "${WORK}/bootfs/uEnv.txt"
+          # OPhub armbian_files behavior copies our rootfs overlay into common-files.
+          # files/etc/... becomes /etc/... in the final image.
+          if [ -d files ]; then
+            sudo cp -a files/. ophub-src/build-armbian/armbian-files/common-files/
           fi
 
-          # Change visible image name.
-          if [ -f "${WORK}/rootfs/etc/armbian-image-release" ]; then
-            sudo sed -i 's|^VENDORPRETTYNAME=.*|VENDORPRETTYNAME="Armbian MytvNet1 905X3"|' "${WORK}/rootfs/etc/armbian-image-release"
-          else
-            echo 'VENDORPRETTYNAME="Armbian MytvNet1 905X3"' | sudo tee "${WORK}/rootfs/etc/armbian-image-release"
-          fi
-
-          # Mark this custom image.
-          cat <<'EOF' | sudo tee "${WORK}/rootfs/etc/mytvnet1-release"
+          # Ensure release marker exists even if files/ was incomplete.
+          sudo mkdir -p ophub-src/build-armbian/armbian-files/common-files/etc
+          cat <<EOF | sudo tee ophub-src/build-armbian/armbian-files/common-files/etc/mytvnet1-release
           BOARD="MytvNet1 905X3"
           BASE_BOARD="s905x3-a95xf3"
           FDT="meson-sm1-a95xf3-air.dtb"
@@ -154,39 +141,76 @@ jobs:
           WIFI_DRIVER="wlan_mt76x8_sdio experimental"
           EOF
 
+      - name: Rebuild Armbian for MytvNet1
+        shell: bash
+        working-directory: ophub-src
+        run: |
+          set -e
+
+          sudo ./rebuild \
+            -b "${BOARD}" \
+            -k "${{ inputs.armbian_kernel }}" \
+            -a true \
+            -u stable \
+            -t ext4 \
+            -n mytvnet1
+
+          ls -lh build/output/images
+
+      - name: Patch DTB and VENDORPRETTYNAME
+        shell: bash
+        working-directory: ophub-src
+        run: |
+          set -e
+
+          IMG="$(find build/output/images -type f -name '*.img' | head -n1)"
+          test -n "$IMG"
+
+          WORK="${GITHUB_WORKSPACE}/_patch_img"
+          mkdir -p "$WORK/rootfs" "$WORK/bootfs"
+
+          LOOP="$(sudo losetup --find --partscan --show "$IMG")"
+          sleep 3
+          lsblk "$LOOP"
+
+          sudo mount "${LOOP}p1" "$WORK/bootfs"
+          sudo mount "${LOOP}p2" "$WORK/rootfs"
+
+          # Force tested DTB.
+          sudo sed -i 's|^FDT=.*|FDT=/dtb/amlogic/meson-sm1-a95xf3-air.dtb|' "$WORK/bootfs/uEnv.txt"
+
+          # Force visible image name.
+          if [ -f "$WORK/rootfs/etc/armbian-image-release" ]; then
+            sudo sed -i 's|^VENDORPRETTYNAME=.*|VENDORPRETTYNAME="Armbian MytvNet1 905X3"|' "$WORK/rootfs/etc/armbian-image-release"
+          else
+            echo 'VENDORPRETTYNAME="Armbian MytvNet1 905X3"' | sudo tee "$WORK/rootfs/etc/armbian-image-release"
+          fi
+
           sync
-          sudo umount "${WORK}/bootfs" || true
-          sudo umount "${WORK}/rootfs"
-          sudo losetup -d "${LOOP}"
+          sudo umount "$WORK/bootfs"
+          sudo umount "$WORK/rootfs"
+          sudo losetup -d "$LOOP"
 
-          # Recompress if original was compressed.
-          case "${IMG}" in
-            *.img.gz)
-              gzip -f "${RAW}"
-              ;;
-            *.img.xz)
-              xz -T0 -f "${RAW}"
-              ;;
-          esac
+          xz -T0 -f "$IMG"
 
-      - name: Upload Armbian image to Release
-        uses: ophub/upload-to-releases@main
-        if: ${{ env.PACKAGED_STATUS == 'success' && !cancelled() }}
-        with:
-          tag: Armbian_MytvNet1_S905X3_${{ inputs.os_release }}_${{ github.run_number }}
-          artifacts: ${{ env.PACKAGED_OUTPUTPATH }}/*
-          allow_updates: true
-          remove_artifacts: false
-          replaces_artifacts: true
-          make_latest: true
-          gh_token: ${{ secrets.GITHUB_TOKEN }}
-          body: |
-            ### Armbian MytvNet1 905X3
+      - name: Create GitHub Release
+        shell: bash
+        working-directory: ophub-src
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
 
-            - Board: `s905x3-a95xf3`
-            - DTB: `meson-sm1-a95xf3-air.dtb`
-            - Ethernet: 100M internal PHY / RMII
-            - Wi-Fi chip: MediaTek MT7668 SDIO `037a:7608`
-            - Wi-Fi driver: experimental `wlan_mt76x8_sdio`
-            - Image name patched: `VENDORPRETTYNAME="Armbian MytvNet1 905X3"`
+          TAG="Armbian_MytvNet1_S905X3_${{ inputs.os_release }}_${{ github.run_number }}"
+
+          gh release create "$TAG" \
+            build/output/images/* \
+            --title "$TAG" \
+            --notes "Armbian MytvNet1 905X3
+          - Board: s905x3-a95xf3
+          - DTB: meson-sm1-a95xf3-air.dtb
+          - Ethernet: 100M internal PHY / RMII
+          - Wi-Fi: MT7668 SDIO, experimental wlan_mt76x8_sdio support
+          - VENDORPRETTYNAME: Armbian MytvNet1 905X3" \
+          || gh release upload "$TAG" build/output/images/* --clobber
             

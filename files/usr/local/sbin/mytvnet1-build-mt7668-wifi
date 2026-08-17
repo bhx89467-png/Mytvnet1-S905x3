@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+LOG="/var/log/mytvnet1-mt7668-build.log"
+exec > >(tee -a "$LOG") 2>&1
+
+echo "===== MytvNet1 MT7668 Wi-Fi build attempt ====="
+date
+uname -a
+
+echo "===== SDIO devices ====="
+for d in /sys/bus/sdio/devices/*; do
+    [ -e "$d" ] || continue
+    echo "--- $d ---"
+    cat "$d/vendor" "$d/device" "$d/class" "$d/modalias" 2>/dev/null || true
+done
+
+if lsmod | grep -q '^wlan_mt76x8_sdio'; then
+    echo "wlan_mt76x8_sdio already loaded."
+    exit 0
+fi
+
+if modinfo wlan_mt76x8_sdio >/dev/null 2>&1; then
+    echo "Existing wlan_mt76x8_sdio found, loading..."
+    modprobe wlan_mt76x8_sdio || true
+    ip link || true
+    exit 0
+fi
+
+echo "Installing build dependencies..."
+apt-get update || true
+apt-get install -y git make gcc bc bison flex libssl-dev libelf-dev kmod build-essential || true
+
+echo "Checking kernel build directory..."
+if [ ! -e "/lib/modules/$(uname -r)/build" ]; then
+    echo "ERROR: /lib/modules/$(uname -r)/build missing."
+    echo "Need matching kernel headers for this OPhub kernel."
+    echo "Try: armbian-update -d deb"
+    exit 10
+fi
+
+WORK="/usr/local/src/mt7668-wifi-bt"
+rm -rf "$WORK"
+
+echo "Cloning MT7668 driver source..."
+git clone --depth=1 https://github.com/noob404yt/mt7668-wifi-bt "$WORK"
+
+cd "$WORK/MT7668-WiFi"
+
+echo "Patching Makefile.x86 for current kernel..."
+sed -i "s|^LINUX_SRC=.*|LINUX_SRC=/lib/modules/$(uname -r)/build|" Makefile.x86 || true
+
+echo "Building MT7668 SDIO Wi-Fi driver..."
+make EXTRA_CFLAGS="-w" CROSS_COMPILE= -f Makefile.x86 WLAN_CHIP_ID=mt7668 hif=sdio
+
+echo "Finding built module..."
+MOD="$(find "$WORK/MT7668-WiFi" -name 'wlan_mt76x8*.ko' -o -name 'wlan_mt7668*.ko' | head -n1 || true)"
+
+if [ -z "$MOD" ]; then
+    echo "ERROR: module was not produced."
+    find "$WORK/MT7668-WiFi" -name '*.ko' -print || true
+    exit 20
+fi
+
+echo "Built module: $MOD"
+
+INSTALL_DIR="/lib/modules/$(uname -r)/extra"
+mkdir -p "$INSTALL_DIR"
+cp -f "$MOD" "$INSTALL_DIR/wlan_mt76x8_sdio.ko"
+depmod -a
+
+echo "Loading module..."
+modprobe wlan_mt76x8_sdio || insmod "$INSTALL_DIR/wlan_mt76x8_sdio.ko" || true
+
+echo "===== dmesg result ====="
+dmesg | grep -Ei 'mt76|7668|7608|037a|wlan|wifi|sdio|firmware' | tail -n 120 || true
+
+echo "===== ip link ====="
+ip link || true
+
+echo "Done."

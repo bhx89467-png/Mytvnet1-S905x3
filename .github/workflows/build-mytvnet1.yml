@@ -1,0 +1,192 @@
+name: Build Armbian MytvNet1 S905X3
+
+on:
+  workflow_dispatch:
+    inputs:
+      armbian_kernel:
+        description: "Kernel series"
+        required: true
+        default: "6.12.y_6.18.y"
+        type: choice
+        options:
+          - 6.12.y_6.18.y
+          - 6.18.y
+          - 6.12.y
+          - 6.6.y
+      armbian_edition:
+        description: "Image edition"
+        required: true
+        default: "server"
+        type: choice
+        options:
+          - server
+          - desktop
+          - beta
+      os_release:
+        description: "OS release"
+        required: true
+        default: "noble"
+        type: choice
+        options:
+          - noble
+          - bookworm
+          - trixie
+
+env:
+  TZ: Asia/Ho_Chi_Minh
+
+jobs:
+  build:
+    runs-on: ubuntu-26.04-arm
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Clean runner
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android 2>/dev/null || true
+          sudo apt-get update
+          sudo apt-get install -y xz-utils gzip tar curl
+          
+      - name: Select base image
+        shell: bash
+        run: |
+          set -e
+
+          case "${{ inputs.os_release }}" in
+            noble)
+              echo "BASE_URL=https://github.com/ophub/amlogic-s9xxx-armbian/releases/download/Armbian_noble_arm64_server/Armbian_noble_arm64_server.img.gz" >> "$GITHUB_ENV"
+              ;;
+            bookworm)
+              echo "BASE_URL=https://github.com/ophub/amlogic-s9xxx-armbian/releases/download/Armbian_bookworm_arm64_server/Armbian_bookworm_arm64_server.img.gz" >> "$GITHUB_ENV"
+              ;;
+            trixie)
+              echo "BASE_URL=https://github.com/ophub/amlogic-s9xxx-armbian/releases/download/Armbian_trixie_arm64_server/Armbian_trixie_arm64_server.img.gz" >> "$GITHUB_ENV"
+              ;;
+            *)
+              echo "Unsupported release: ${{ inputs.os_release }}"
+              exit 1
+              ;;
+          esac
+
+      - name: Build Armbian for MytvNet1 / A95XF3 100M
+        uses: ophub/amlogic-s9xxx-armbian@main
+        with:
+          build_target: armbian
+          armbian_board: s905x3-a95xf3
+          armbian_path: ${{ env.BASE_URL }}
+          armbian_kernel: ${{ inputs.armbian_kernel }}
+          auto_kernel: true
+          kernel_repo: ophub/kernel
+          kernel_usage: stable
+          armbian_fstype: ext4
+          armbian_edition: ${{ inputs.armbian_edition }}
+          armbian_files: files
+          builder_name: mytvnet1
+
+      - name: Patch image release name
+        if: ${{ env.PACKAGED_STATUS == 'success' && !cancelled() }}
+        shell: bash
+        run: |
+          set -e
+
+          echo "PACKAGED_OUTPUTPATH=${PACKAGED_OUTPUTPATH}"
+          ls -lh "${PACKAGED_OUTPUTPATH}"
+
+          IMG="$(find "${PACKAGED_OUTPUTPATH}" -type f \( -name '*.img' -o -name '*.img.gz' -o -name '*.img.xz' \) | head -n1)"
+          echo "Image: ${IMG}"
+
+          WORK="${GITHUB_WORKSPACE}/_patch_img"
+          mkdir -p "${WORK}"
+
+          case "${IMG}" in
+            *.img.gz)
+              gzip -dkf "${IMG}"
+              RAW="${IMG%.gz}"
+              ;;
+            *.img.xz)
+              xz -dkf "${IMG}"
+              RAW="${IMG%.xz}"
+              ;;
+            *.img)
+              RAW="${IMG}"
+              ;;
+            *)
+              echo "Unknown image format: ${IMG}"
+              exit 1
+              ;;
+          esac
+
+          LOOP="$(sudo losetup --find --partscan --show "${RAW}")"
+          echo "Loop: ${LOOP}"
+
+          sleep 3
+          lsblk "${LOOP}"
+
+          ROOT_PART="${LOOP}p2"
+          BOOT_PART="${LOOP}p1"
+
+          sudo mkdir -p "${WORK}/rootfs" "${WORK}/bootfs"
+          sudo mount "${ROOT_PART}" "${WORK}/rootfs"
+          sudo mount "${BOOT_PART}" "${WORK}/bootfs" || true
+
+          # Make sure boot config uses correct tested DTB.
+          if [ -f "${WORK}/bootfs/uEnv.txt" ]; then
+            sudo sed -i 's|^FDT=.*|FDT=/dtb/amlogic/meson-sm1-a95xf3-air.dtb|' "${WORK}/bootfs/uEnv.txt"
+          fi
+
+          # Change visible image name.
+          if [ -f "${WORK}/rootfs/etc/armbian-image-release" ]; then
+            sudo sed -i 's|^VENDORPRETTYNAME=.*|VENDORPRETTYNAME="Armbian MytvNet1 905X3"|' "${WORK}/rootfs/etc/armbian-image-release"
+          else
+            echo 'VENDORPRETTYNAME="Armbian MytvNet1 905X3"' | sudo tee "${WORK}/rootfs/etc/armbian-image-release"
+          fi
+
+          # Mark this custom image.
+          cat <<'EOF' | sudo tee "${WORK}/rootfs/etc/mytvnet1-release"
+          BOARD="MytvNet1 905X3"
+          BASE_BOARD="s905x3-a95xf3"
+          FDT="meson-sm1-a95xf3-air.dtb"
+          WIFI_CHIP="MediaTek MT7668 SDIO 037a:7608/037a:7668"
+          WIFI_DRIVER="wlan_mt76x8_sdio experimental"
+          EOF
+
+          sync
+          sudo umount "${WORK}/bootfs" || true
+          sudo umount "${WORK}/rootfs"
+          sudo losetup -d "${LOOP}"
+
+          # Recompress if original was compressed.
+          case "${IMG}" in
+            *.img.gz)
+              gzip -f "${RAW}"
+              ;;
+            *.img.xz)
+              xz -T0 -f "${RAW}"
+              ;;
+          esac
+
+      - name: Upload Armbian image to Release
+        uses: ophub/upload-to-releases@main
+        if: ${{ env.PACKAGED_STATUS == 'success' && !cancelled() }}
+        with:
+          tag: Armbian_MytvNet1_S905X3_${{ inputs.os_release }}_${{ github.run_number }}
+          artifacts: ${{ env.PACKAGED_OUTPUTPATH }}/*
+          allow_updates: true
+          remove_artifacts: false
+          replaces_artifacts: true
+          make_latest: true
+          gh_token: ${{ secrets.GITHUB_TOKEN }}
+          body: |
+            ### Armbian MytvNet1 905X3
+
+            - Board: `s905x3-a95xf3`
+            - DTB: `meson-sm1-a95xf3-air.dtb`
+            - Ethernet: 100M internal PHY / RMII
+            - Wi-Fi chip: MediaTek MT7668 SDIO `037a:7608`
+            - Wi-Fi driver: experimental `wlan_mt76x8_sdio`
+            - Image name patched: `VENDORPRETTYNAME="Armbian MytvNet1 905X3"`
+            

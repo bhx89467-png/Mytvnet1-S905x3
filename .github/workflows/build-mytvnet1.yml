@@ -86,7 +86,7 @@ jobs:
           # Release tags look like:
           # Armbian_noble_arm64_server_2026.08
           # Armbian_bookworm_arm64_server_2026.08
-          TAG_PREFIX="Armbian_${RELEASE}_amlogic_s905x3_${EDITION}_"
+          TAG_PREFIX="Armbian_${RELEASE}_arm64_${EDITION}_"
 
           # Asset names usually contain:
           # _s905x3-a95xf3_
@@ -116,22 +116,24 @@ jobs:
               ;;
           esac
 
-          echo "Tag prefix: ${TAG_PREFIX}"
-          echo "Kernel regex: ${KERNEL_RE}"
+          echo "Searching OPhub releases..."
+          echo "  tag prefix: ${TAG_PREFIX}"
+          echo "  release:    ${RELEASE}"
+          echo "  edition:    ${EDITION}"
+          echo "  kernel re:  ${KERNEL_RE}"
+          echo "  family:     amlogic_s905x3"
 
-          ASSET_JSON="$(curl -fsSL \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            "${API}" | jq -r \
+          ASSET_JSON="$(echo "${JSON}" | jq -r \
             --arg tag_prefix "${TAG_PREFIX}" \
-            --arg board "_${BOARD}_" \
+            --arg release "_${RELEASE}_" \
             --arg edition "_${EDITION}_" \
             --arg kernel_re "${KERNEL_RE}" '
               [
                 .[]
                 | select(.tag_name | startswith($tag_prefix))
                 | .assets[]
-                | select(.name | contains($board))
+                | select(.name | contains("_amlogic_s905x3_"))
+                | select(.name | contains($release))
                 | select(.name | contains($edition))
                 | select(.name | test($kernel_re))
                 | select(.name | endswith(".img.gz") or endswith(".img.xz") or endswith(".img"))
@@ -145,18 +147,17 @@ jobs:
           IMAGE_NAME="$(echo "${ASSET_JSON}" | jq -r '.name // empty')"
 
           if [ -z "${IMAGE_URL}" ] || [ "${IMAGE_URL}" = "null" ]; then
-            echo "No exact image found for ${RELEASE}/${EDITION}/${BOARD}/${KERNEL}."
+            echo "No matching amlogic_s905x3 image found."
             echo
-            echo "Available recent release tags:"
-            curl -fsSL \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer ${GH_TOKEN}" \
-              "${API}" | jq -r '.[0:20][] | .tag_name'
-            echo
-            echo "Try:"
-            echo "  image_edition=server"
-            echo "  armbian_kernel=6.12.y_6.18.y"
-            echo "  os_release=noble or bookworm"
+            echo "Debug candidates:"
+            echo "${JSON}" | jq -r \
+              --arg tag_prefix "${TAG_PREFIX}" '
+                .[]
+                | select(.tag_name | startswith($tag_prefix))
+                | .assets[]
+                | select(.name | contains("amlogic_s905x3"))
+                | .name
+              '
             exit 1
           fi
 

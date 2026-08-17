@@ -5,7 +5,6 @@ on:
 
 env:
   TZ: Asia/Ho_Chi_Minh
-
   BOARD: s905x3-a95xf3
   TESTED_DTB: meson-sm1-a95xf3-air.dtb
   VENDOR_PRETTY: "Armbian MytvNet1 905X3"
@@ -27,18 +26,14 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Install host tools
         shell: bash
         run: |
           set -euo pipefail
-
           sudo apt-get update
-          sudo apt-get install -y \
-            curl jq xz-utils gzip tar unzip \
-            parted dosfstools e2fsprogs util-linux \
-            gh
+          sudo apt-get install -y curl jq xz-utils gzip tar unzip parted dosfstools e2fsprogs util-linux gh
 
       - name: Download hardcoded OPhub image
         shell: bash
@@ -48,18 +43,13 @@ jobs:
           mkdir -p build/output/images
           cd build/output/images
 
-          echo "Downloading:"
-          echo "${BASE_IMAGE_URL}"
+          echo "Downloading: ${BASE_IMAGE_URL}"
 
           for i in 1 2 3 4 5; do
             echo "Download attempt ${i}..."
-            curl -fL \
-              --retry 5 \
-              --retry-delay 10 \
-              --retry-all-errors \
-              "${BASE_IMAGE_URL}" \
-              -o "${BASE_IMAGE_NAME}" && break
-
+            if curl -fL --retry 5 --retry-delay 10 --retry-all-errors "${BASE_IMAGE_URL}" -o "${BASE_IMAGE_NAME}"; then
+              break
+            fi
             sleep $((i * 10))
           done
 
@@ -84,9 +74,7 @@ jobs:
           esac
 
           test -f "${RAW_IMAGE}"
-
           echo "RAW_IMAGE=build/output/images/${RAW_IMAGE}" >> "${GITHUB_ENV}"
-
           ls -lh
 
       - name: Patch image for MytvNet1
@@ -115,133 +103,32 @@ jobs:
           sleep 3
           sudo partprobe "${LOOP}" || true
           sleep 2
-
           lsblk "${LOOP}"
 
           sudo mount "${LOOP}p1" "${WORK}/bootfs"
           sudo mount "${LOOP}p2" "${WORK}/rootfs"
 
-          echo "Injecting repo files/ overlay if present..."
+          echo "Injecting files/ overlay if present..."
           if [ -d files ]; then
             sudo cp -a files/. "${WORK}/rootfs/"
           fi
 
-          echo "Creating MT7668 Wi-Fi helper..."
-          sudo mkdir -p "${WORK}/rootfs/usr/local/sbin"
-          sudo tee "${WORK}/rootfs/usr/local/sbin/mytvnet1-build-mt7668-wifi" >/dev/null <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
+          echo "Ensuring Wi-Fi helper permissions if present..."
+          sudo chmod +x "${WORK}/rootfs/usr/local/sbin/mytvnet1-build-mt7668-wifi" 2>/dev/null || true
 
-LOG="/var/log/mytvnet1-mt7668-build.log"
-exec > >(tee -a "$LOG") 2>&1
+          echo "Enabling MT7668 service if present..."
+          if [ -f "${WORK}/rootfs/etc/systemd/system/mytvnet1-mt7668-wifi.service" ]; then
+            sudo mkdir -p "${WORK}/rootfs/etc/systemd/system/multi-user.target.wants"
+            sudo ln -sf ../mytvnet1-mt7668-wifi.service \
+              "${WORK}/rootfs/etc/systemd/system/multi-user.target.wants/mytvnet1-mt7668-wifi.service"
+          fi
 
-echo "===== MytvNet1 MT7668 Wi-Fi build/load attempt ====="
-date
-uname -a
-
-echo "===== SDIO devices ====="
-for d in /sys/bus/sdio/devices/*; do
-    [ -e "$d" ] || continue
-    echo "--- $d ---"
-    cat "$d/vendor" "$d/device" "$d/class" "$d/modalias" 2>/dev/null || true
-done
-
-echo "===== Try Bluetooth MTK SDIO first ====="
-modprobe btmtk || true
-modprobe btmtksdio || true
-
-if modinfo wlan_mt76x8_sdio >/dev/null 2>&1; then
-    echo "Existing wlan_mt76x8_sdio module found. Loading..."
-    modprobe wlan_mt76x8_sdio || true
-    ip link || true
-    exit 0
-fi
-
-if [ ! -e "/lib/modules/$(uname -r)/build" ]; then
-    echo "ERROR: kernel headers/build directory missing:"
-    echo "/lib/modules/$(uname -r)/build"
-    echo
-    echo "Install matching OPhub kernel headers first, then rerun:"
-    echo "sudo /usr/local/sbin/mytvnet1-build-mt7668-wifi"
-    exit 10
-fi
-
-echo "Installing build dependencies..."
-apt-get update || true
-apt-get install -y git make gcc bc bison flex libssl-dev libelf-dev kmod build-essential || true
-
-WORK="/usr/local/src/mt7668-wifi-bt"
-rm -rf "$WORK"
-
-echo "Cloning MT7668 vendor driver source..."
-git clone --depth=1 https://github.com/noob404yt/mt7668-wifi-bt "$WORK"
-
-cd "$WORK/MT7668-WiFi"
-
-echo "Patching Makefile.x86 for current kernel..."
-sed -i "s|^LINUX_SRC=.*|LINUX_SRC=/lib/modules/$(uname -r)/build|" Makefile.x86 || true
-
-echo "Building MT7668 SDIO Wi-Fi driver..."
-make EXTRA_CFLAGS="-w" CROSS_COMPILE= -f Makefile.x86 WLAN_CHIP_ID=mt7668 hif=sdio
-
-echo "Finding built module..."
-MOD="$(find "$WORK/MT7668-WiFi" -name 'wlan_mt76x8*.ko' -o -name 'wlan_mt7668*.ko' | head -n1 || true)"
-
-if [ -z "$MOD" ]; then
-    echo "ERROR: no module produced."
-    find "$WORK/MT7668-WiFi" -name '*.ko' -print || true
-    exit 20
-fi
-
-echo "Built module: $MOD"
-
-INSTALL_DIR="/lib/modules/$(uname -r)/extra"
-mkdir -p "$INSTALL_DIR"
-
-cp -f "$MOD" "$INSTALL_DIR/wlan_mt76x8_sdio.ko"
-depmod -a
-
-echo "Loading wlan_mt76x8_sdio..."
-modprobe wlan_mt76x8_sdio || insmod "$INSTALL_DIR/wlan_mt76x8_sdio.ko" || true
-
-echo "===== dmesg result ====="
-dmesg | grep -Ei 'mt76|7668|7608|037a|wlan|wifi|sdio|firmware|btmtk' | tail -n 160 || true
-
-echo "===== ip link ====="
-ip link || true
-
-echo "Done."
-EOF
-
-          sudo chmod +x "${WORK}/rootfs/usr/local/sbin/mytvnet1-build-mt7668-wifi"
-
-          echo "Creating MT7668 systemd service..."
-          sudo mkdir -p "${WORK}/rootfs/etc/systemd/system"
-          sudo tee "${WORK}/rootfs/etc/systemd/system/mytvnet1-mt7668-wifi.service" >/dev/null <<'EOF'
-[Unit]
-Description=Build/load MT7668 SDIO Wi-Fi driver for MytvNet1 S905X3
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/sbin/mytvnet1-build-mt7668-wifi
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-          sudo mkdir -p "${WORK}/rootfs/etc/systemd/system/multi-user.target.wants"
-          sudo ln -sf ../mytvnet1-mt7668-wifi.service \
-            "${WORK}/rootfs/etc/systemd/system/multi-user.target.wants/mytvnet1-mt7668-wifi.service"
-
-          echo "Creating module load config for Bluetooth side..."
+          echo "Loading Bluetooth-side modules at boot..."
           sudo mkdir -p "${WORK}/rootfs/etc/modules-load.d"
           sudo tee "${WORK}/rootfs/etc/modules-load.d/mytvnet1-mt7668.conf" >/dev/null <<'EOF'
-btmtk
-btmtksdio
-EOF
+          btmtk
+          btmtksdio
+          EOF
 
           echo "Forcing tested DTB..."
           if [ -f "${WORK}/bootfs/uEnv.txt" ]; then
@@ -263,19 +150,19 @@ EOF
             echo "VENDORPRETTYNAME=\"${VENDOR_PRETTY}\"" | sudo tee "${WORK}/rootfs/etc/armbian-image-release"
           fi
 
-          echo "Writing MytvNet1 release marker..."
+          echo "Writing MytvNet1 marker..."
           sudo tee "${WORK}/rootfs/etc/mytvnet1-release" >/dev/null <<EOF
-BOARD="MytvNet1 905X3"
-BASE_BOARD="${BOARD}"
-FDT="${TESTED_DTB}"
-OS_RELEASE="${OS_RELEASE}"
-IMAGE_EDITION="${IMAGE_EDITION}"
-KERNEL_VERSION="${KERNEL_VERSION}"
-SOURCE_IMAGE="${BASE_IMAGE_NAME}"
-WIFI_CHIP="MediaTek MT7668 SDIO 037a:7608/037a:7668"
-WIFI_DRIVER="wlan_mt76x8_sdio experimental"
-VENDORPRETTYNAME="${VENDOR_PRETTY}"
-EOF
+          BOARD="MytvNet1 905X3"
+          BASE_BOARD="${BOARD}"
+          FDT="${TESTED_DTB}"
+          OS_RELEASE="${OS_RELEASE}"
+          IMAGE_EDITION="${IMAGE_EDITION}"
+          KERNEL_VERSION="${KERNEL_VERSION}"
+          SOURCE_IMAGE="${BASE_IMAGE_NAME}"
+          WIFI_CHIP="MediaTek MT7668 SDIO 037a:7608/037a:7668"
+          WIFI_DRIVER="wlan_mt76x8_sdio experimental"
+          VENDORPRETTYNAME="${VENDOR_PRETTY}"
+          EOF
 
           echo "Resulting /boot/uEnv.txt:"
           cat "${WORK}/bootfs/uEnv.txt" || true
@@ -299,15 +186,12 @@ EOF
           test -f "${IMG}"
 
           OUT_BASE="Armbian_MytvNet1_905X3_${OS_RELEASE}_${KERNEL_VERSION}_${IMAGE_EDITION}_$(date +%Y.%m.%d).img"
-
           mv "${IMG}" "build/output/images/${OUT_BASE}"
 
           xz -T0 -f "build/output/images/${OUT_BASE}"
 
           FINAL_IMAGE="build/output/images/${OUT_BASE}.xz"
-
           sha256sum "${FINAL_IMAGE}" | tee "${FINAL_IMAGE}.sha256"
-
           echo "FINAL_IMAGE=${FINAL_IMAGE}" >> "${GITHUB_ENV}"
 
           ls -lh build/output/images
@@ -322,52 +206,18 @@ EOF
           TAG="Armbian_MytvNet1_S905X3_${OS_RELEASE}_${KERNEL_VERSION}_${IMAGE_EDITION}_${{ github.run_number }}"
 
           NOTES="$(cat <<EOF
-        # Armbian MytvNet1 905X3
+          # Armbian MytvNet1 905X3
 
-        Hardcoded OPhub base image:
+          - Source image: \`${BASE_IMAGE_NAME}\`
+          - OS release: \`${OS_RELEASE}\`
+          - Image edition: \`${IMAGE_EDITION}\`
+          - Kernel version: \`${KERNEL_VERSION}\`
+          - Board profile: \`${BOARD}\`
+          - Tested DTB: \`${TESTED_DTB}\`
+          - Wi-Fi chip: MediaTek MT7668 SDIO \`037a:7608 / 037a:7668\`
+          - VENDORPRETTYNAME: \`${VENDOR_PRETTY}\`
+          EOF
+          )"
 
-        \`${BASE_IMAGE_NAME}\`
-
-        Source URL:
-
-        \`${BASE_IMAGE_URL}\`
-
-        ## Build details
-
-        - OS release: \`${OS_RELEASE}\`
-        - Image edition: \`${IMAGE_EDITION}\`
-        - Kernel version: \`${KERNEL_VERSION}\`
-        - Board profile: \`${BOARD}\`
-        - Tested DTB: \`${TESTED_DTB}\`
-        - Ethernet: 100M internal PHY / RMII
-        - Wi-Fi chip: MediaTek MT7668 SDIO \`037a:7608 / 037a:7668\`
-        - Wi-Fi helper: experimental \`wlan_mt76x8_sdio\`
-        - VENDORPRETTYNAME: \`${VENDOR_PRETTY}\`
-
-        ## First boot check
-
-        \`\`\`bash
-        cat /etc/armbian-image-release | grep VENDORPRETTYNAME
-        cat /etc/mytvnet1-release
-        cat /boot/uEnv.txt
-
-        ip link
-
-        for d in /sys/bus/sdio/devices/*; do
-          echo "--- \$d ---"
-          cat "\$d/vendor" "\$d/device" "\$d/modalias" 2>/dev/null
-        done
-
-        systemctl status mytvnet1-mt7668-wifi.service --no-pager || true
-        cat /var/log/mytvnet1-mt7668-build.log || true
-
-        dmesg | grep -Ei 'eth|dwmac|phy|sdio|mt76|7668|7608|037a|wlan|wifi|btmtk'
-        \`\`\`
-        EOF
-        )"
-
-                  gh release create "${TAG}" \
-                    build/output/images/* \
-                    --title "${TAG}" \
-                    --notes "${NOTES}" \
-                  || gh release upload "${TAG}" build/output/images/* --clobber
+          gh release create "${TAG}" build/output/images/* --title "${TAG}" --notes "${NOTES}" \
+          || gh release upload "${TAG}" build/output/images/* --clobber

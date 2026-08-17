@@ -79,10 +79,10 @@ jobs:
 
           case "${KERNEL}" in
             6.12.y_6.18.y)
-              KERNEL_RE='_(6\.12|6\.18)\.'
+              KERNEL_RE='_(6.12|6.18).'
               ;;
             6.18.y)
-              KERNEL_RE='_6\.18\.'
+              KERNEL_RE='_6.18.'
               ;;
             6.12.y)
               KERNEL_RE='_6\.12\.'

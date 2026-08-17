@@ -86,7 +86,7 @@ jobs:
           # Release tags look like:
           # Armbian_noble_arm64_server_2026.08
           # Armbian_bookworm_arm64_server_2026.08
-          TAG_PREFIX="Armbian_${RELEASE}_arm64_${EDITION}_"
+          TAG_PREFIX="Armbian_${RELEASE}_amlogic_s905x3_${EDITION}_"
 
           # Asset names usually contain:
           # _s905x3-a95xf3_

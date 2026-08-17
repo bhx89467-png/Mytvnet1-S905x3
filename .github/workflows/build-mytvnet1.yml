@@ -322,52 +322,52 @@ EOF
           TAG="Armbian_MytvNet1_S905X3_${OS_RELEASE}_${KERNEL_VERSION}_${IMAGE_EDITION}_${{ github.run_number }}"
 
           NOTES="$(cat <<EOF
-# Armbian MytvNet1 905X3
+        # Armbian MytvNet1 905X3
 
-Hardcoded OPhub base image:
+        Hardcoded OPhub base image:
 
-\`${BASE_IMAGE_NAME}\`
+        \`${BASE_IMAGE_NAME}\`
 
-Source URL:
+        Source URL:
 
-\`${BASE_IMAGE_URL}\`
+        \`${BASE_IMAGE_URL}\`
 
-## Build details
+        ## Build details
 
-- OS release: \`${OS_RELEASE}\`
-- Image edition: \`${IMAGE_EDITION}\`
-- Kernel version: \`${KERNEL_VERSION}\`
-- Board profile: \`${BOARD}\`
-- Tested DTB: \`${TESTED_DTB}\`
-- Ethernet: 100M internal PHY / RMII
-- Wi-Fi chip: MediaTek MT7668 SDIO \`037a:7608 / 037a:7668\`
-- Wi-Fi helper: experimental \`wlan_mt76x8_sdio\`
-- VENDORPRETTYNAME: \`${VENDOR_PRETTY}\`
+        - OS release: \`${OS_RELEASE}\`
+        - Image edition: \`${IMAGE_EDITION}\`
+        - Kernel version: \`${KERNEL_VERSION}\`
+        - Board profile: \`${BOARD}\`
+        - Tested DTB: \`${TESTED_DTB}\`
+        - Ethernet: 100M internal PHY / RMII
+        - Wi-Fi chip: MediaTek MT7668 SDIO \`037a:7608 / 037a:7668\`
+        - Wi-Fi helper: experimental \`wlan_mt76x8_sdio\`
+        - VENDORPRETTYNAME: \`${VENDOR_PRETTY}\`
 
-## First boot check
+        ## First boot check
 
-\`\`\`bash
-cat /etc/armbian-image-release | grep VENDORPRETTYNAME
-cat /etc/mytvnet1-release
-cat /boot/uEnv.txt
+        \`\`\`bash
+        cat /etc/armbian-image-release | grep VENDORPRETTYNAME
+        cat /etc/mytvnet1-release
+        cat /boot/uEnv.txt
 
-ip link
+        ip link
 
-for d in /sys/bus/sdio/devices/*; do
-  echo "--- \$d ---"
-  cat "\$d/vendor" "\$d/device" "\$d/modalias" 2>/dev/null
-done
+        for d in /sys/bus/sdio/devices/*; do
+          echo "--- \$d ---"
+          cat "\$d/vendor" "\$d/device" "\$d/modalias" 2>/dev/null
+        done
 
-systemctl status mytvnet1-mt7668-wifi.service --no-pager || true
-cat /var/log/mytvnet1-mt7668-build.log || true
+        systemctl status mytvnet1-mt7668-wifi.service --no-pager || true
+        cat /var/log/mytvnet1-mt7668-build.log || true
 
-dmesg | grep -Ei 'eth|dwmac|phy|sdio|mt76|7668|7608|037a|wlan|wifi|btmtk'
-\`\`\`
-EOF
-)"
+        dmesg | grep -Ei 'eth|dwmac|phy|sdio|mt76|7668|7608|037a|wlan|wifi|btmtk'
+        \`\`\`
+        EOF
+        )"
 
-          gh release create "${TAG}" \
-            build/output/images/* \
-            --title "${TAG}" \
-            --notes "${NOTES}" \
-          || gh release upload "${TAG}" build/output/images/* --clobber
+                  gh release create "${TAG}" \
+                    build/output/images/* \
+                    --title "${TAG}" \
+                    --notes "${NOTES}" \
+                  || gh release upload "${TAG}" build/output/images/* --clobber

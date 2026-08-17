@@ -73,27 +73,10 @@ jobs:
           RELEASE="${{ inputs.os_release }}"
           EDITION="${{ inputs.image_edition }}"
           KERNEL="${{ inputs.armbian_kernel }}"
-          BOARD="${BOARD}"
-
-          echo "Requested:"
-          echo "  OS release: ${RELEASE}"
-          echo "  Edition:    ${EDITION}"
-          echo "  Kernel:     ${KERNEL}"
-          echo "  Board:      ${BOARD}"
 
           API="https://api.github.com/repos/ophub/amlogic-s9xxx-armbian/releases?per_page=100"
-
-          # Release tags look like:
-          # Armbian_noble_arm64_server_2026.08
-          # Armbian_bookworm_arm64_server_2026.08
           TAG_PREFIX="Armbian_${RELEASE}_arm64_${EDITION}_"
 
-          # Asset names usually contain:
-          # _s905x3-a95xf3_
-          # _server_ / _desktop_ / _beta_
-          # kernel version such as _6.12.xxx_ or _6.18.xxx_
-          #
-          # For grouped kernel input 6.12.y_6.18.y, accept either 6.12.* or 6.18.*.
           case "${KERNEL}" in
             6.12.y_6.18.y)
               KERNEL_RE='_(6\.12|6\.18)\.'
@@ -116,6 +99,11 @@ jobs:
               ;;
           esac
 
+          echo "Requested:"
+          echo "  OS release: ${RELEASE}"
+          echo "  Edition:    ${EDITION}"
+          echo "  Kernel:     ${KERNEL}"
+          echo "  Board:      ${BOARD}"
           echo "Searching OPhub releases..."
           echo "  tag prefix: ${TAG_PREFIX}"
           echo "  release:    ${RELEASE}"
@@ -123,7 +111,22 @@ jobs:
           echo "  kernel re:  ${KERNEL_RE}"
           echo "  family:     amlogic_s905x3"
 
-          ASSET_JSON="$(echo "${JSON}" | jq -r \
+          RELEASES_JSON="/tmp/ophub-releases.json"
+
+          curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            "${API}" > "${RELEASES_JSON}"
+
+          echo "Recent matching release tags:"
+          jq -r \
+            --arg tag_prefix "${TAG_PREFIX}" '
+              .[]
+              | select(.tag_name | startswith($tag_prefix))
+              | .tag_name
+            ' "${RELEASES_JSON}" | head -n 10
+
+          ASSET_JSON="$(jq -r \
             --arg tag_prefix "${TAG_PREFIX}" \
             --arg release "_${RELEASE}_" \
             --arg edition "_${EDITION}_" \
@@ -140,24 +143,24 @@ jobs:
               ]
               | sort_by(.updated_at)
               | reverse
-              | .[0]
-            ')"
+              | .[0] // {}
+            ' "${RELEASES_JSON}")"
 
           IMAGE_URL="$(echo "${ASSET_JSON}" | jq -r '.browser_download_url // empty')"
           IMAGE_NAME="$(echo "${ASSET_JSON}" | jq -r '.name // empty')"
 
-          if [ -z "${IMAGE_URL}" ] || [ "${IMAGE_URL}" = "null" ]; then
+          if [ -z "${IMAGE_URL}" ]; then
             echo "No matching amlogic_s905x3 image found."
             echo
             echo "Debug candidates:"
-            echo "${JSON}" | jq -r \
+            jq -r \
               --arg tag_prefix "${TAG_PREFIX}" '
                 .[]
                 | select(.tag_name | startswith($tag_prefix))
                 | .assets[]
                 | select(.name | contains("amlogic_s905x3"))
                 | .name
-              '
+              ' "${RELEASES_JSON}" | head -n 80
             exit 1
           fi
 

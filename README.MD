@@ -26,9 +26,4 @@ Default:
 
 ## Notes
 
-Ethernet is expected to work with `meson-sm1-a95xf3-air.dtb`.
 
-MT7668 Wi-Fi is experimental. The image includes a boot-time build/load script:
-
-```bash
-/usr/local/sbin/mytvnet1-build-mt7668-wifi

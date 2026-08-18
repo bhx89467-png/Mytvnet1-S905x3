@@ -1,0 +1,13 @@
+[Unit]
+Description=MytvNet1 HT1628 front LED panel daemon
+After=multi-user.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/mytvnet1-vfd
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

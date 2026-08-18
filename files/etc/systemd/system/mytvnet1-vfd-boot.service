@@ -1,0 +1,12 @@
+[Unit]
+Description=MytvNet1 VFD early boot text
+DefaultDependencies=no
+After=local-fs.target
+Before=sysinit.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mytvnet1-vfd once boot
+
+[Install]
+WantedBy=sysinit.target

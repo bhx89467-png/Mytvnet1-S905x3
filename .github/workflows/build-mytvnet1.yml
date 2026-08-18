@@ -108,20 +108,61 @@ jobs:
           sudo mount "${LOOP}p1" "${WORK}/bootfs"
           sudo mount "${LOOP}p2" "${WORK}/rootfs"
 
-          echo "Injecting files/ overlay if present..."
-          if [ -d files ]; then
-            sudo cp -a files/. "${WORK}/rootfs/"
+          echo "Injecting MytvNet1 overlay..."
+
+          if [ ! -d files ]; then
+            echo "ERROR: files/ overlay directory not found."
+            exit 1
           fi
 
-          echo "Ensuring Wi-Fi helper permissions if present..."
-          sudo chmod +x "${WORK}/rootfs/usr/local/sbin/mytvnet1-build-mt7668-wifi" 2>/dev/null || true
+          sudo cp -a files/. "${WORK}/rootfs/"
 
-          echo "Enabling MT7668 service if present..."
-          if [ -f "${WORK}/rootfs/etc/systemd/system/mytvnet1-mt7668-wifi.service" ]; then
-            sudo mkdir -p "${WORK}/rootfs/etc/systemd/system/multi-user.target.wants"
-            sudo ln -sf ../mytvnet1-mt7668-wifi.service \
-              "${WORK}/rootfs/etc/systemd/system/multi-user.target.wants/mytvnet1-mt7668-wifi.service"
+          VFD_SCRIPT="${WORK}/rootfs/usr/local/sbin/mytvnet1-vfd"
+          VFD_BOOT_SERVICE="${WORK}/rootfs/etc/systemd/system/mytvnet1-vfd-boot.service"
+          VFD_SERVICE="${WORK}/rootfs/etc/systemd/system/mytvnet1-vfd.service"
+
+          if [ ! -f "${VFD_SCRIPT}" ]; then
+            echo "ERROR: ${VFD_SCRIPT} missing."
+            exit 1
           fi
+
+          if [ ! -f "${VFD_BOOT_SERVICE}" ]; then
+            echo "ERROR: ${VFD_BOOT_SERVICE} missing."
+            exit 1
+          fi
+
+          if [ ! -f "${VFD_SERVICE}" ]; then
+            echo "ERROR: ${VFD_SERVICE} missing."
+            exit 1
+          fi
+
+          echo "Normalizing Windows/WSL line endings..."
+          sudo sed -i 's/\r$//' \
+            "${VFD_SCRIPT}" \
+            "${VFD_BOOT_SERVICE}" \
+            "${VFD_SERVICE}"
+
+          echo "Preparing MytvNet1 VFD services..."
+
+          sudo chmod 755 "${VFD_SCRIPT}"
+          sudo chmod 644 "${VFD_BOOT_SERVICE}" "${VFD_SERVICE}"
+
+          sudo mkdir -p \
+            "${WORK}/rootfs/etc/systemd/system/sysinit.target.wants" \
+            "${WORK}/rootfs/etc/systemd/system/multi-user.target.wants"
+
+          sudo ln -sfn \
+            ../mytvnet1-vfd-boot.service \
+            "${WORK}/rootfs/etc/systemd/system/sysinit.target.wants/mytvnet1-vfd-boot.service"
+
+          sudo ln -sfn \
+            ../mytvnet1-vfd.service \
+            "${WORK}/rootfs/etc/systemd/system/multi-user.target.wants/mytvnet1-vfd.service"
+
+          echo "VFD service links:"
+          ls -l \
+            "${WORK}/rootfs/etc/systemd/system/sysinit.target.wants/mytvnet1-vfd-boot.service" \
+            "${WORK}/rootfs/etc/systemd/system/multi-user.target.wants/mytvnet1-vfd.service"
 
           echo "Loading Bluetooth-side modules at boot..."
           sudo mkdir -p "${WORK}/rootfs/etc/modules-load.d"
@@ -139,16 +180,26 @@ jobs:
 
           echo "Patching VENDORPRETTYNAME..."
           sudo mkdir -p "${WORK}/rootfs/etc"
+          RELEASE_FILE="${WORK}/rootfs/etc/armbian-image-release"
+          BOARDNAME_FILE="${WORK}/rootfs/etc/armbian-release"
 
-          if [ -f "${WORK}/rootfs/etc/armbian-image-release" ]; then
-            if grep -q '^VENDORPRETTYNAME=' "${WORK}/rootfs/etc/armbian-image-release"; then
-              sudo sed -i "s|^VENDORPRETTYNAME=.*|VENDORPRETTYNAME=\"${VENDOR_PRETTY}\"|" "${WORK}/rootfs/etc/armbian-image-release"
-            else
-              echo "VENDORPRETTYNAME=\"${VENDOR_PRETTY}\"" | sudo tee -a "${WORK}/rootfs/etc/armbian-image-release"
-            fi
-          else
-            echo "VENDORPRETTYNAME=\"${VENDOR_PRETTY}\"" | sudo tee "${WORK}/rootfs/etc/armbian-image-release"
-          fi
+          sudo touch "${RELEASE_FILE}"
+
+          sudo sed -i \
+            '/^VENDORPRETTYNAME=/d' \
+            "${RELEASE_FILE}"
+
+          echo 'VENDORPRETTYNAME="Armbian MytvNet1 905X3"' \
+            | sudo tee -a "${RELEASE_FILE}"
+            
+          sudo touch "${BOARDNAME_FILE}"
+
+          sudo sed -i \
+            '/^BOARD_NAME=/d' \
+            "${BOARDNAME_FILE}"
+
+          echo 'BOARD_NAME="MytvNet1 S905x3 - t.me/Phu_Digi"' \
+            | sudo tee -a "${BOARDNAME_FILE}"
 
           echo "Writing MytvNet1 marker..."
           sudo tee "${WORK}/rootfs/etc/mytvnet1-release" >/dev/null <<EOF
@@ -159,8 +210,22 @@ jobs:
           IMAGE_EDITION="${IMAGE_EDITION}"
           KERNEL_VERSION="${KERNEL_VERSION}"
           SOURCE_IMAGE="${BASE_IMAGE_NAME}"
+          
           WIFI_CHIP="MediaTek MT7668 SDIO 037a:7608/037a:7668"
-          WIFI_DRIVER="wlan_mt76x8_sdio experimental"
+          WIFI_DRIVER="wlan_mt76x8_sdio"
+          
+          VFD_CONTROLLER="HT1628"
+          VFD_GPIO_STB="GPIOAO_6"
+          VFD_GPIO_CLK="GPIOAO_7"
+          VFD_GPIO_DATA="GPIOAO_8"
+          VFD_DIGITS="0,2,4,6"
+          VFD_SIGNS_ADDR="8"
+          VFD_POWER_BIT="2"
+          VFD_LAN_BIT="3"
+          VFD_COLON_BIT="4"
+          VFD_WIFI_HIGH_BIT="5"
+          VFD_WIFI_LOW_BIT="6"
+          
           VENDORPRETTYNAME="${VENDOR_PRETTY}"
           EOF
 
@@ -169,6 +234,9 @@ jobs:
 
           echo "Resulting /etc/armbian-image-release:"
           cat "${WORK}/rootfs/etc/armbian-image-release" || true
+          
+          echo "Resulting /etc/armbian-release:"
+          cat "${WORK}/rootfs/etc/armbian-release" || true
 
           echo "Resulting /etc/mytvnet1-release:"
           cat "${WORK}/rootfs/etc/mytvnet1-release" || true

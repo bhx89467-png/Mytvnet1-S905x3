@@ -108,6 +108,22 @@ jobs:
           sudo mount "${LOOP}p1" "${WORK}/bootfs"
           sudo mount "${LOOP}p2" "${WORK}/rootfs"
 
+          echo "Installing tested MytvNet1 eMMC U-Boot overload..."
+
+          if [ ! -f "${WORK}/bootfs/u-boot-s905x3.bin" ]; then
+            echo "ERROR: u-boot-s905x3.bin not found in boot filesystem."
+            exit 1
+          fi
+
+          sudo cp -f \
+            "${WORK}/bootfs/u-boot-s905x3.bin" \
+            "${WORK}/bootfs/u-boot.emmc"
+
+          echo "Verifying U-Boot overload..."
+          sha256sum \
+            "${WORK}/bootfs/u-boot-s905x3.bin" \
+            "${WORK}/bootfs/u-boot.emmc"
+          
           echo "Injecting MytvNet1 overlay..."
 
           if [ ! -d files ]; then
@@ -185,21 +201,15 @@ jobs:
 
           sudo touch "${RELEASE_FILE}"
 
-          sudo sed -i \
-            '/^VENDORPRETTYNAME=/d' \
-            "${RELEASE_FILE}"
+          sudo sed -i '/^VENDORPRETTYNAME=/d' "${RELEASE_FILE}"
 
-          echo 'VENDORPRETTYNAME="Armbian MytvNet1 905X3"' \
-            | sudo tee -a "${RELEASE_FILE}"
+          echo 'VENDORPRETTYNAME="Armbian MytvNetX3"' | sudo tee -a "${RELEASE_FILE}"
             
           sudo touch "${BOARDNAME_FILE}"
 
-          sudo sed -i \
-            '/^BOARD_NAME=/d' \
-            "${BOARDNAME_FILE}"
+          sudo sed -i '/^BOARD_NAME=/d' "${BOARDNAME_FILE}"
 
-          echo 'BOARD_NAME="MytvNet1 S905x3 - t.me/Phu_Digi"' \
-            | sudo tee -a "${BOARDNAME_FILE}"
+          echo 'BOARD_NAME="MytvNet S905x3 - t.me/Phu_Digi"' | sudo tee -a "${BOARDNAME_FILE}"
 
           echo "Writing MytvNet1 marker..."
           sudo tee "${WORK}/rootfs/etc/mytvnet1-release" >/dev/null <<EOF
@@ -210,6 +220,10 @@ jobs:
           IMAGE_EDITION="${IMAGE_EDITION}"
           KERNEL_VERSION="${KERNEL_VERSION}"
           SOURCE_IMAGE="${BASE_IMAGE_NAME}"
+          
+          UBOOT_OVERLOAD="u-boot-s905x3.bin"
+          EXPECTED_RAM="4GB"
+          TESTED_MEMTOTAL="~3761MiB"
           
           WIFI_CHIP="MediaTek MT7668 SDIO 037a:7608/037a:7668"
           WIFI_DRIVER="wlan_mt76x8_sdio"
